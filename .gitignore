@@ -1,0 +1,6 @@
+.env
+.streamlit
+orchestrator/__pycache__
+utils/__pycache__
+venv
+PyWhatKit_DB.txt
