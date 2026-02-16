@@ -122,135 +122,148 @@ elif page == "🛂 Authority Dashboard":
     role = st.session_state.admin_role
     st.title(f"🛂 {role} Dashboard")
 
-    # --- 1. MULTI-STAGE ESCALATION & ADMIN WARNINGS ---
-    # Fetch Pending tickets that aren't already with Common admin
+    # --- 1. TWO-STAGE ESCALATION & ADMIN WARNINGS ---
     esc_res = supabase_client.table("complaints")\
         .select("*")\
         .eq("status", "Pending")\
         .eq("category", role)\
         .neq("category", "Common").execute()
     
-    # Define Thresholds
-            # Critical: 2h (7200s), High: 4h (14400s), Medium: 8h (28800s)
-            # limits = {"CRITICAL": 7200, "HIGH": 14400, "MEDIUM": 28800}
-            # escalation_limit = limits.get(ticket['alert_level'], 86400) # Default 24h
-            # warning_limit = escalation_limit - 900 # 15 Minutes before escalation
-    
     for ticket in esc_res.data:
         raw_ts = ticket['timestamp'].replace('Z', '+00:00')
         try:
             created_at = datetime.fromisoformat(raw_ts)
-            from datetime import timezone, timedelta
+            from datetime import timezone
             time_diff = (datetime.now(timezone.utc) - created_at).total_seconds()
             
-            # PROTOTYPE SPEEDS
-            limits = {"CRITICAL": 7200, "HIGH": 14400, "MEDIUM": 28800}
-            escalation_limit = limits.get(ticket['alert_level'], 86400) # Default 24h
-            warning_limit = escalation_limit - 900 # 15 Minutes before escalation
-            # limits = {"CRITICAL": 60, "HIGH": 120, "MEDIUM": 180}
-            # escalation_limit = limits.get(ticket['alert_level'], 300)
-            # warning_limit = escalation_limit - 30 
+            # PROTOTYPE SPEEDS (Warning at 30s, Escalation at 60s)
+            limits = {"CRITICAL": 60, "HIGH": 120, "MEDIUM": 180}
+            escalation_limit = limits.get(ticket['alert_level'], 300)
+            warning_limit = escalation_limit - 30 
             
-            # STAGE 1: WhatsApp Warning to Dept Admin
             if warning_limit <= time_diff < escalation_limit:
                 dept_mobile = ADMIN_CREDENTIALS.get(ticket['category'], {}).get("mobile")
                 if dept_mobile:
-                    with st.spinner(f"📲 Triggering Emergency Alert to {ticket['category']} Admin..."):
-                        try:
-                            warning_text = f"🚨 URGENT: {ticket['category']} Admin, Ticket {ticket['complaint_id']} escalates in 15 seconds!"
-                            
-                            # 1. Open the tab (Increase wait_time to 25 to allow for slow loading)
-                            kit.sendwhatmsg_instantly(f"+{dept_mobile}", warning_text, wait_time=25, tab_close=True)
-                            
-                            # 2. CRITICAL: Wait for the browser to load and the cursor to focus
-                            time.sleep(8) 
-                            
-                            # 3. Press Enter (This will now land in the WhatsApp text box)
-                            pyautogui.press('enter') 
-                            
-                            st.toast("Alert Sent!", icon="✅")
-                        except Exception as e:
-                            st.error(f"WhatsApp Automation Failed: {e}")
+                    with st.spinner(f"📲 Alerting {ticket['category']} Admin..."):
+                        # WhatsApp Warning logic
+                        warning_text = f"🚨 URGENT: Ticket {ticket['complaint_id']} escalates in 30 seconds!"
+                        kit.sendwhatmsg_instantly(f"+{dept_mobile}", warning_text, wait_time=20, tab_close=True)
+                        time.sleep(8) 
+                        pyautogui.press('enter') 
+                        st.toast("Admin Notified!", icon="✅")
 
             elif time_diff >= escalation_limit:
-                # Update Supabase first
                 supabase_client.table("complaints").update({
                     "category": "Common", 
                     "recommended_action": "🚨 REDIRECTED: Stalled."
                 }).eq("complaint_id", ticket['complaint_id']).execute()
-                
-                st.error(f"Ticket {ticket['complaint_id']} REDIRECTED to Master.")
-                time.sleep(1) # Ensure the message is visible to you
-                st.rerun() # Refresh after all logic is done
-        except Exception as e:
-            print(f"Error in automation: {e}")
+                st.error(f"Ticket {ticket['complaint_id']} REDIRECTED to Master Admin.")
+                st.rerun()
+        except:
+            pass
 
-    # --- 2. DATA VIEW: ROLE-BASED FILTERING ---
+    # --- 2. DATA FETCHING ---
     if role == "Common":
-        # Master Admin sees everything uncompleted
         response = supabase_client.table("complaints").select("*").neq("status", "Completed").execute()
     else:
-        # Dept Admin sees only their assigned uncompleted work
         response = supabase_client.table("complaints").select("*").eq("category", role).neq("status", "Completed").execute()
     
     dept_data = response.data
 
     if not dept_data:
-        st.info(f"No active grievances found for {role}. All clear!")
+        st.info(f"No active grievances found for {role}.")
     else:
         df = pd.DataFrame(dept_data)
         
-        # Overview Metrics
-        m1, m2, m3 = st.columns(3)
-        m1.metric("📋 Active Tasks", len(df))
-        m2.metric("🚨 Critical", len(df[df["alert_level"] == "CRITICAL"]))
-        m3.metric("🏠 Areas", df["area"].nunique())
+        # --- 3. THE "CRITICAL PILLAR" VISUALIZATION ---
+        # Splitting the dashboard to highlight Emergencies [cite: 61, 104]
+        critical_df = df[df["alert_level"] == "CRITICAL"]
+        other_df = df[df["alert_level"] != "CRITICAL"]
 
-        # Sort: Critical first
-        p_map = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-        df["p_rank"] = df["alert_level"].map(p_map)
-        df = df.sort_values("p_rank")
-
-        for idx, row in df.iterrows():
-            urgency_indicator = "🔴" if row['alert_level'] == "CRITICAL" else "🟠" if row['alert_level'] == "HIGH" else "🟢"
-            
-            with st.expander(f"{urgency_indicator} {row['address']} | {row['area']} | {row['alert_level']}"):
-                st.write(f"### Issue: {row['complaint_text']}")
-                st.divider()
-                
-                # Citizen & Location Details for Field Officers
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**📍 Address:** {row['address']}, {row['area']}, {row['city']} - {row['pincode']}")
-                    st.markdown(f"**📞 Citizen Mobile:** {row['phone']}")
-                with c2:
-                    st.markdown(f"**⚖️ Priority Score:** {row['priority_score']}/10")
-                    st.markdown(f"**🛡️ Dept:** {row['category']}")
-                
-                st.info(f"**💡 AI Recommended Action:** {row['recommended_action']}")
-
-                # Status Update & Database Purge Logic
-                new_status = st.selectbox("Update Status", ["Pending", "In Progress", "Completed"], 
-                                          index=["Pending", "In Progress", "Completed"].index(row["status"]),
-                                          key=f"status_{row['complaint_id']}")
-
-                if new_status != row["status"]:
-                    if new_status == "Completed":
-                        # REMOVE FROM SUPABASE ON COMPLETION
-                        supabase_client.table("complaints").delete().eq("complaint_id", row["complaint_id"]).execute()
-                        st.success("✅ Ticket Resolved and record purged from Cloud Database.")
-                    else:
-                        supabase_client.table("complaints").update({"status": new_status}).eq("complaint_id", row["complaint_id"]).execute()
+        if not critical_df.empty:
+            st.error("🚨 EMERGENCY ACTION REQUIRED")
+            for idx, row in critical_df.iterrows():
+                with st.expander(f"🔴 CRITICAL: {row['address']} | {row['area']}", expanded=True):
+                    # Show all citizen details and issue as before 
+                    st.write(f"### Issue: {row['complaint_text']}")
+                    st.divider()
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"**📍 Location:** {row['address']}, {row['area']}, {row['city']} - {row['pincode']}")
+                        st.markdown(f"**📞 Citizen Contact:** {row['phone']}")
+                    with c2:
+                        st.markdown(f"**⚖️ Priority Score:** {row['priority_score']}/10")
+                        st.markdown(f"**🛡️ Category:** {row['category']}")
+                    st.warning(f"**💡 AI Action Plan:** {row['recommended_action']}")
                     
-                    # Notify Citizen of Progress
-                    try:
-                        kit.sendwhatmsg_instantly(f"+91{row['phone']}", f"CivicSense: Work on your ticket {row['complaint_id']} is now {new_status}.", 18, True)
-                        time.sleep(2)
-                        pyautogui.press('enter')
-                    except:
-                        pass
+                    # Update Status Logic
+                    new_status = st.selectbox("Action", ["Pending", "In Progress", "Completed"], 
+                                              index=["Pending", "In Progress", "Completed"].index(row["status"]),
+                                              key=f"crit_{row['complaint_id']}")
+                    if new_status != row["status"]:
+                        # WhatsApp Notify First 
+                        with st.spinner("Notifying Citizen..."):
+                            kit.sendwhatmsg_instantly(f"+91{row['phone']}", f"CivicSense: Work on your ticket {row['complaint_id']} is now {new_status}.", 20, True)
+                            time.sleep(8)
+                            pyautogui.press('enter')
+                        
+                        if new_status == "Completed":
+                            supabase_client.table("complaints").delete().eq("complaint_id", row["complaint_id"]).execute()
+                        else:
+                            supabase_client.table("complaints").update({"status": new_status}).eq("complaint_id", row["complaint_id"]).execute()
+                        st.rerun()
+
+        # Display Standard Issues
+       
+        if not other_df.empty:
+            st.subheader("📋 Active Tasks")
+            for idx, row in other_df.iterrows():
+                # Set visual indicator based on urgency level
+                indicator = "🟠" if row['alert_level'] == "HIGH" else "🟢"
+                
+                # Expanding card now contains FULL citizen and issue details 
+                with st.expander(f"{indicator} {row['address']} | {row['area']} | {row['alert_level']}"):
+                    st.write(f"### Issue: {row['complaint_text']}")
+                    st.divider()
                     
-                    st.rerun()
+                    # Detailed Info Grid
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"**📍 Full Address:** {row['address']}, {row['area']}, {row['city']} - {row['pincode']}")
+                        st.markdown(f"**📞 Citizen Phone:** {row['phone']}")
+                    with c2:
+                        st.markdown(f"**⚖️ Priority Score:** {row['priority_score']}/10")
+                        st.markdown(f"**🛡️ Assigned Dept:** {row['category']}")
+                    
+                    st.info(f"**💡 AI Recommended Action:** {row['recommended_action']}")
+                    
+                    # Status Update Logic with WhatsApp Integration [cite: 33, 46]
+                    new_status = st.selectbox("Update Work Status", ["Pending", "In Progress", "Completed"], 
+                                            index=["Pending", "In Progress", "Completed"].index(row["status"]),
+                                            key=f"std_{row['complaint_id']}")
+                    
+                    if new_status != row["status"]:
+                        # Trigger WhatsApp Notification before updating DB [cite: 46]
+                        with st.spinner("🔄 Sending WhatsApp Update to Citizen..."):
+                            try:
+                                citizen_msg = f"CivicSense Update: Your ticket {row['complaint_id']} status changed to {new_status}."
+                                # Fixed 20-second wait to ensure reliable delivery [cite: 33]
+                                kit.sendwhatmsg_instantly(f"+91{row['phone']}", citizen_msg, wait_time=25, tab_close=True)
+                                time.sleep(10)
+                                pyautogui.press('enter')
+                                time.sleep(5)
+                                st.toast("Citizen Notified Successfully!")
+                            except Exception as e:
+                                st.warning(f"WhatsApp Notification failed, but status will be updated: {e}")
+                        
+                        # Perform Database Update/Purge [cite: 41]
+                        if new_status == "Completed":
+                            supabase_client.table("complaints").delete().eq("complaint_id", row["complaint_id"]).execute()
+                            st.success("Issue Resolved. Data purged from active database.")
+                        else:
+                            supabase_client.table("complaints").update({"status": new_status}).eq("complaint_id", row["complaint_id"]).execute()
+                        
+                        st.rerun()
                     
 # --- OTHER PAGES ---
 elif page == "ℹ️ Community Impact":
