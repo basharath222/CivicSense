@@ -80,12 +80,17 @@ if page == "📝 Submit Complaint":
             st.session_state.city_input.strip(), st.session_state.pin_input.strip(),
             st.session_state.phone_input.strip(), st.session_state.complaint_input.strip()
         )
+        
 
         if not all([v_addr, v_area, v_city, v_pin, v_phone, v_complaint]):
             st.error("❌ Please fill in all required fields.")
         else:
             with st.status("🧠 AI is processing...", expanded=True) as status:
                 ai_output = analyze_complaint_with_gemini(v_complaint, PROMPT_TEMPLATE)
+                if ai_output["category"] == "Common" or "homework" in v_complaint.lower():
+                    status.update(label="❌ Invalid Complaint Type", state="error", expanded=True)
+                    st.error("⚠️ Our AI has detected that this is not a civic infrastructure issue. Please report problems related to Water, Roads, Electricity, etc.")
+                    st.stop()
                 situation = analyze_situation(ai_output)
                 # Inside the Submit Button logic in app.py
                 # Change this line:
@@ -99,19 +104,20 @@ if page == "📝 Submit Complaint":
                 if situation["alert_level"] == "CRITICAL":
                     trigger_alert(authority, v_phone, v_area, v_city)
                 status.update(label="✅ Submission Successful!", state="complete", expanded=False)
-
-            st.balloons()
-            st.success(f"### Ticket Generated: **{comp_id}**")
-            st.write(f"Routed to: **{authority}**")
             
-            st.divider()
-            st.subheader("📊 AI Analysis Report")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Category", normalized_cat)
-            p_color = "🔴" if situation["alert_level"] == "CRITICAL" else "🟠" if situation["alert_level"] == "HIGH" else "🟢"
-            c2.metric("Priority", f"{p_color} {situation['alert_level']}")
-            c3.metric("Criticality", f"{situation['priority_score']} / 10")
-            st.info(f"**Action:** {ai_output['recommended_action']}")
+
+                st.balloons()
+                st.success(f"### Ticket Generated: **{comp_id}**")
+                st.write(f"Routed to: **{authority}**")
+                
+                st.divider()
+                st.subheader("📊 AI Analysis Report")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Category", normalized_cat)
+                p_color = "🔴" if situation["alert_level"] == "CRITICAL" else "🟠" if situation["alert_level"] == "HIGH" else "🟢"
+                c2.metric("Priority", f"{p_color} {situation['alert_level']}")
+                c3.metric("Criticality", f"{situation['priority_score']} / 10")
+                st.info(f"**Action:** {ai_output['recommended_action']}")
 
 elif page == "🛂 Authority Dashboard":
     if st.sidebar.button("🚪 Logout"):
@@ -136,10 +142,19 @@ elif page == "🛂 Authority Dashboard":
             from datetime import timezone
             time_diff = (datetime.now(timezone.utc) - created_at).total_seconds()
             
-            # PROTOTYPE SPEEDS (Warning at 30s, Escalation at 60s)
-            limits = {"CRITICAL": 60, "HIGH": 120, "MEDIUM": 180}
-            escalation_limit = limits.get(ticket['alert_level'], 300)
-            warning_limit = escalation_limit - 30 
+
+            # Critical: 24h, High: 36h, Medium: 48h
+            limits = {
+                "CRITICAL": 86400, 
+                "HIGH": 129600, 
+                "MEDIUM": 172800
+            }
+
+            # Get the limit for the current ticket's alert level
+            escalation_limit = limits.get(ticket['alert_level'], 259200) # Default to 72h if unknown
+
+            # Warning occurs 1 hour (3600s) before the final escalation
+            warning_limit = escalation_limit - 3600
             
             if warning_limit <= time_diff < escalation_limit:
                 dept_mobile = ADMIN_CREDENTIALS.get(ticket['category'], {}).get("mobile")
@@ -185,6 +200,7 @@ elif page == "🛂 Authority Dashboard":
             for idx, row in critical_df.iterrows():
                 with st.expander(f"🔴 CRITICAL: {row['address']} | {row['area']}", expanded=True):
                     # Show all citizen details and issue as before 
+                    st.caption(f"📅 Registered on: {row['timestamp']}")
                     st.write(f"### Issue: {row['complaint_text']}")
                     st.divider()
                     c1, c2 = st.columns(2)
@@ -223,6 +239,7 @@ elif page == "🛂 Authority Dashboard":
                 
                 # Expanding card now contains FULL citizen and issue details 
                 with st.expander(f"{indicator} {row['address']} | {row['area']} | {row['alert_level']}"):
+                    st.caption(f"📅 Registered on: {row['timestamp']}")
                     st.write(f"### Issue: {row['complaint_text']}")
                     st.divider()
                     
@@ -248,10 +265,10 @@ elif page == "🛂 Authority Dashboard":
                             try:
                                 citizen_msg = f"CivicSense Update: Your ticket {row['complaint_id']} status changed to {new_status}."
                                 # Fixed 20-second wait to ensure reliable delivery [cite: 33]
-                                kit.sendwhatmsg_instantly(f"+91{row['phone']}", citizen_msg, wait_time=25, tab_close=True)
-                                time.sleep(10)
+                                kit.sendwhatmsg_instantly(f"+91{row['phone']}", citizen_msg, wait_time=30, tab_close=True)
+                                time.sleep(12)
                                 pyautogui.press('enter')
-                                time.sleep(5)
+                                time.sleep(10)
                                 st.toast("Citizen Notified Successfully!")
                             except Exception as e:
                                 st.warning(f"WhatsApp Notification failed, but status will be updated: {e}")
@@ -265,10 +282,48 @@ elif page == "🛂 Authority Dashboard":
                         
                         st.rerun()
                     
-# --- OTHER PAGES ---
+# --- PAGE: COMMUNITY IMPACT (ABOUT PAGE) ---
 elif page == "ℹ️ Community Impact":
-    st.title("🌍 Community Impact")
-    st.markdown("Automating governance for **SDG Goal 11: Sustainable Cities.**")
+    st.title("🌍 About CivicSense")
+    st.subheader("Automating Governance for a Safer, Smarter Tomorrow")
+
+    st.markdown("""
+    **CivicSense** is an AI-powered grievance redressal system designed to bridge the gap between 
+    citizens and local authorities. By leveraging Large Language Models, we turn unstructured 
+    community complaints into actionable data. 
+    """)
+
+    st.divider()
+
+    # --- SECTION: OUR MISSION ---
+    col1, col2 = st.columns(2)
+    with col1:
+        st.header("🎯 Our Mission")
+        st.write("""
+        * **Zero Friction**: Allowing citizens to report issues in natural language. 
+        * **Instant Routing**: Eliminating manual sorting by directing tickets to the right experts.
+        * **Life-Saving Priority**: Ensuring critical emergencies are never buried in paperwork. 
+        """)
+    
+    with col2:
+        st.header("🛠️ Core Innovation")
+        st.write("""
+        * **AI-Driven Logic**: Using Google Gemini to extract intent and risk levels. 
+        * **Automated Escalation**: A two-stage protocol to prevent administrative delays.
+        * **Transparency**: Real-time WhatsApp notifications to keep citizens informed. 
+        """)
+
+    st.divider()
+
+    # --- SECTION: SDG ALIGNMENT ---
+    st.header("Global Impact: SDG Goal 11")
+    st.info("**Sustainable Cities and Communities**")
+    st.write("""
+    CivicSense directly contributes to **United Nations Sustainable Development Goal 11** by:
+    1. **Target 11.3**: Enhancing inclusive and sustainable urbanization through participatory governance. 
+    2. **Target 11.7**: Providing universal access to safe, inclusive, and accessible green and public spaces by maintaining infrastructure efficiently.
+    """)
+
 
 elif page == "🔐 Admin Login":
     st.title("🔐 Authority Login")
